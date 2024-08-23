@@ -36,9 +36,14 @@ import addon_utils
 from math import radians
 from mathutils import Matrix, Vector, Quaternion, Euler
 
+ppath = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+sys.path.append(ppath)
+from mGPT.render.pyrender.hybrik_loc2rot import HybrIKJointsToRotmat
+
 # Globals
-male_model_path = '/apdcephfs/share_1227775/shingxchen/uicap/data/SMPL_unity_v.1.0.0/smpl/Models/SMPL_m_unityDoubleBlends_lbs_10_scale5_207_v1.0.0.fbx'
-female_model_path = '/apdcephfs/share_1227775/shingxchen/uicap/data/SMPL_unity_v.1.0.0/smpl/Models/SMPL_f_unityDoubleBlends_lbs_10_scale5_207_v1.0.0.fbx'
+male_model_path = f'{ppath}/libs/SMPL_unity_v.1.0.0/smpl/Models/SMPL_m_unityDoubleBlends_lbs_10_scale5_207_v1.0.0.fbx'
+female_model_path = f'{ppath}/libs/SMPL_unity_v.1.0.0/smpl/Models/SMPL_f_unityDoubleBlends_lbs_10_scale5_207_v1.0.0.fbx'
 
 fps_source = 30
 fps_target = 30
@@ -56,8 +61,8 @@ bone_name_from_index = {
     5 : 'R_Knee',
     6 : 'Spine2',
     7 : 'L_Ankle',
-    8: 'R_Ankle',
-    9: 'Spine3',
+    8 : 'R_Ankle',
+    9 : 'Spine3',
     10: 'L_Foot',
     11: 'R_Foot',
     12: 'Neck',
@@ -108,15 +113,28 @@ def setup_scene(model_path, fps_target):
 
 
 # Process single pose into keyframed bone orientations
-def process_pose(current_frame, pose, trans, pelvis_position):
-
+def process_pose(current_frame, pose, trans, pelvis_position, is_IK_pose=False):
+    """
+    Args:
+        current_frame: frame number. start with 1
+        pose: rotation vec or bone end-point (if is_IK_pose == True)
+        trans: position of Pelvis
+        is_IK_pose: say whether 'pose' is rotvec or IK end-point
+            custom args by xaiseung@airi.kr
+    """
     if pose.shape[0] == 72:
         rod_rots = pose.reshape(24, 3)
     else:
-        rod_rots = pose.reshape(26, 3)
+        rod_rots = np.zeros([26, 3])
+        tmp_pose = pose.reshape(-1, 3)
+        rod_rots[:min(26, tmp_pose.shape[0])] = tmp_pose[:min(26, tmp_pose.shape[0])]
 
-    mat_rots = [Rodrigues(rod_rot) for rod_rot in rod_rots]
-
+    if is_IK_pose:
+        # smpl 관절의 IK 종점을 보고 이에 대한 Rotation matrix로 바꿉니다.
+        pose_gen = HybrIKJointsToRotmat()
+        mat_rots = pose_gen(rod_rots[:22].reshape(1, -1, 3))[0]
+    else:
+        mat_rots = [Rodrigues(rod_rot) for rod_rot in rod_rots]
     # Set the location of the Pelvis bone to the translation parameter
     armature = bpy.data.objects['Armature']
     bones = armature.pose.bones
@@ -141,7 +159,10 @@ def process_pose(current_frame, pose, trans, pelvis_position):
 
         if index == 0:
             # Rotate pelvis so that avatar stands upright and looks along negative Y avis
-            bone.rotation_quaternion = (quat_x_90_cw @ quat_z_90_cw) @ bone_rotation
+            if is_IK_pose:
+                bone.rotation_quaternion = bone_rotation
+            else:
+                bone.rotation_quaternion = (quat_x_90_cw @ quat_z_90_cw) @ bone_rotation
         else:
             bone.rotation_quaternion = bone_rotation
 
@@ -159,10 +180,24 @@ def process_poses(
         start_origin,
         person_id=1,
 ):
-
+    is_IK_pose=False
     print('Processing: ' + input_path)
-
-    data = joblib.load(input_path)
+    if input_path.endswith(".pkl"):
+        # 기존 방식 pkl 방식
+        data = joblib.load(input_path)
+        
+    elif input_path.endswith(".npy"):
+        is_IK_pose=True
+        # 관절 좌표 정보 담고 있는 .npy 받기
+        tmp_pose = np.load(input_path)
+        if len(tmp_pose.shape) == 4:
+            tmp_pose = tmp_pose[0]
+        data = {1: {"pose": tmp_pose}}
+        # 위치 정보 넣어주기
+        # 기존 코드는 위치 정보를 .pkl에 별도로 따로 담고 있는데, 우리는 IK 방식이다 보니 만들어서 넣어줘야 함
+        # .npy x = right-axis, y = up-axis, z = front-axis
+        # trans = blender pelvis: 0 = z, 1 = x, 2 = y
+        data[1]["trans"] = data[1]["pose"][:, 0, [2, 0, 1]].copy()
     person_id = list(data.keys())[0]
     poses = data[person_id]['pose']
     if 'trans' not in data[person_id].keys():
@@ -223,7 +258,7 @@ def process_poses(
         # Go to new frame
         scene.frame_set(frame)
 
-        process_pose(frame, poses[source_index], (trans[source_index] - offset), pelvis_position)
+        process_pose(frame, poses[source_index], (trans[source_index] - offset), pelvis_position, is_IK_pose=is_IK_pose)
         source_index += sample_rate
         frame += 1
 
@@ -319,7 +354,7 @@ if __name__ == '__main__':
             sys.exit(1)
 
         # Process pose file
-        if input_path.endswith('.pkl'):
+        if input_path.endswith('.npy') or input_path.endswith('.pkl'):
             if not os.path.isfile(input_path):
                 print('ERROR: Invalid input file')
                 sys.exit(1)

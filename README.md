@@ -1,3 +1,23 @@
+# README BY XAISEUNG (work in progress...)
+
+
+## 1. MotionGPT 출력 얻기 (webui)
+```
+python app.py
+```
+프롬프트를 주면 출력에 알맞게
+`./cache` 폴더 내부에 `_joint.npy` 로 끝나는 파일이 생성됨.
+
+## 2. fbx로 출력하기.
+```
+libs/blender-2.93.18-linux-x64/blender --background --python scripts/fbx_output.py --input cache/{input_name}.npy --output {output_name}.fbx
+```
+
+생성된 `_joint.npy` 을 --input으로 입력하면 `output_name.fbx`로 출력해줌
+
+
+
+
 <div align= "center">
     <h1> Official repo for MotionGPT <img src="./assets/images/avatar_bot.jpg" width="35px"></h1>
 

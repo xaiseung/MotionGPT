@@ -89,20 +89,38 @@ def motion_token_to_string(motion_token, lengths, codebook_size=512):
 
 
 def render_motion(data, feats, method='fast'):
+    """
+    Render input motion, save as .mp4, and export joint as .npy 
+    Args:
+        data: joint end point (IK)
+        feats: raw output of MotionGPT
+            only used to be saved as .npy
+        method: determine visualization method
+            "fast": bone-only method.
+            "slow": smpl wrapped method.
+            "both": do "slow" procedure and "fast" procdeure.
+    Returns:
+        output_mp4_path, video_fname, output_npy_path, feats_fname
+    """
     fname = time.strftime("%Y-%m-%d-%H_%M_%S", time.localtime(
         time.time())) + str(np.random.randint(10000, 99999))
     video_fname = fname + '.mp4'
     feats_fname = fname + '.npy'
+    joints_fname = fname + '_joint.npy'
     output_npy_path = os.path.join(output_dir, feats_fname)
+    output_joints_npy_path = os.path.join(output_dir, joints_fname)
     output_mp4_path = os.path.join(output_dir, video_fname)
     np.save(output_npy_path, feats)
+    np.save(output_joints_npy_path, data)
 
-    if method == 'slow':
+    if method == 'slow' or method == "both":
         if len(data.shape) == 4:
             data = data[0]
-        data = data - data[0, 0]
+        tmp_data = data = data - data[0, 0]
         pose_generator = HybrIKJointsToRotmat()
-        pose = pose_generator(data)
+        #회전행렬 생성
+        pose = pose_generator(tmp_data)
+        # pose (T, 22, 3, 3) => (T, 24, 3, 3)
         pose = np.concatenate([
             pose,
             np.stack([np.stack([np.eye(3)] * pose.shape[0], 0)] * 2, 1)
@@ -110,11 +128,17 @@ def render_motion(data, feats, method='fast'):
         shape = [768, 768]
         render = SMPLRender(cfg.RENDER.SMPL_MODEL_PATH)
 
+        # 이유는 모르겠는데 x축으로 180도 돌아가서 결과가 나와서 돌려주나봄...
         r = RRR.from_rotvec(np.array([np.pi, 0.0, 0.0]))
         pose[:, 0] = np.matmul(r.as_matrix().reshape(1, 3, 3), pose[:, 0])
         vid = []
-        aroot = data[[0], 0]
-        aroot[:, 1] = -aroot[:, 1]
+        # 기존 slow 코드는 모든 프레임의 root의 위치를 0번째 프레임의 root로 고정함
+        # 제자리에서 모션만 허우적대는 결과가 나옴.
+        #aroot = tmp_data[[0], 0]
+        #aroot[:, 1] = -aroot[:, 1]
+        # 그렇게 하지 말고 모든 프레임 각자 쓰도록 바꿔서 모션대로 따라가도록 변경함
+        aroot = tmp_data[:, 0]
+        aroot = np.matmul(r.as_matrix().reshape(1, 3, 3), aroot[..., np.newaxis])[..., 0]
         params = dict(pred_shape=np.zeros([1, 10]),
                       pred_root=aroot,
                       pred_pose=pose)
@@ -130,7 +154,8 @@ def render_motion(data, feats, method='fast'):
         out_video.write_videofile(output_mp4_path)
         del out, render
 
-    elif method == 'fast':
+    if method == 'fast' or method == "both":
+        output_mp4_path = output_mp4_path[:-4] + "_fast.mp4"
         output_gif_path = output_mp4_path[:-4] + '.gif'
         if len(data.shape) == 3:
             data = data[None]
@@ -513,7 +538,7 @@ with gr.Blocks(css=customCSS) as demo:
                     container=False)
 
             with gr.Row():
-                aud = gr.Audio(source="microphone",
+                aud = gr.Audio(sources="microphone",
                                label="Speak input",
                                type='filepath')
                 btn = gr.UploadButton("📁 Upload motion",
@@ -534,7 +559,7 @@ with gr.Blocks(css=customCSS) as demo:
                 t2t_eg = gr.Button("Random description", elem_id="t2t")
 
         with gr.Column(scale=0.15, min_width=150):
-            method = gr.Dropdown(["slow", "fast"],
+            method = gr.Dropdown(["slow", "fast", "both"],
                                  label="Visulization method",
                                  interactive=True,
                                  elem_id="method",
